@@ -286,18 +286,23 @@ export function useGame() {
       }
     }
 
-    // Collect goal cells: tiles within attack range of target that are in-bounds and not occupied
-    const goals: { x: number; y: number }[] = []
-    for (let y = 0; y < BOARD_HEIGHT; y++) {
-      for (let x = 0; x < BOARD_WIDTH; x++) {
-        if (chebyshev({ x, y } as any, target) <= unit.range) {
-          if (!occ.has(key(x, y)) || (x === unit.x && y === unit.y)) {
-            goals.push({ x, y })
+    // Helper to collect in-range goal cells for a given enemy
+    const collectGoals = (enemy: Unit) => {
+      const g: { x: number; y: number }[] = []
+      for (let yy = 0; yy < BOARD_HEIGHT; yy++) {
+        for (let xx = 0; xx < BOARD_WIDTH; xx++) {
+          if (chebyshev({ x: xx, y: yy } as any, enemy) <= unit.range) {
+            if (!occ.has(key(xx, yy)) || (xx === unit.x && yy === unit.y)) {
+              g.push({ x: xx, y: yy })
+            }
           }
         }
       }
+      return g
     }
 
+    // First try goals around the chosen target
+    const goals: { x: number; y: number }[] = collectGoals(target)
     if (goals.length === 0) return
 
     // BFS for shortest path from unit to nearest goal
@@ -323,12 +328,17 @@ export function useGame() {
         break
       }
 
+      // Explore neighbors biased toward the target to prefer straighter paths
       const neighbors = [
         { x: cur.x + 1, y: cur.y },
         { x: cur.x - 1, y: cur.y },
         { x: cur.x, y: cur.y + 1 },
         { x: cur.x, y: cur.y - 1 }
-      ]
+      ].sort((a, b) => {
+        const da = Math.abs(a.x - target.x) + Math.abs(a.y - target.y)
+        const db = Math.abs(b.x - target.x) + Math.abs(b.y - target.y)
+        return da - db
+      })
 
       for (const n of neighbors) {
         if (n.x < 0 || n.x >= BOARD_WIDTH || n.y < 0 || n.y >= BOARD_HEIGHT) continue
@@ -343,8 +353,51 @@ export function useGame() {
     }
 
     if (!foundGoalKey) {
-      // No path to any in-range goal
-      return
+      // Fallback: try any enemy's in-range goals if the nearest is unreachable
+      const enemies = units.value.filter(u => u.team !== unit.team && u.hp > 0)
+      const allGoals: { x: number; y: number }[] = []
+      for (const e of enemies) {
+        if (e.id === target.id) continue
+        allGoals.push(...collectGoals(e))
+      }
+      if (allGoals.length === 0) return
+
+      // Re-run BFS with all goals
+      q.length = 0
+      visited.clear()
+      parent.clear()
+      const isGoalKey2 = new Set(allGoals.map(g => key(g.x, g.y)))
+      q.push(start)
+      visited.add(startKey)
+      parent.set(startKey, null)
+      while (q.length > 0 && !foundGoalKey) {
+        const cur = q.shift()!
+        const ck = key(cur.x, cur.y)
+        if (isGoalKey2.has(ck)) {
+          foundGoalKey = ck
+          break
+        }
+        const neighbors = [
+          { x: cur.x + 1, y: cur.y },
+          { x: cur.x - 1, y: cur.y },
+          { x: cur.x, y: cur.y + 1 },
+          { x: cur.x, y: cur.y - 1 }
+        ].sort((a, b) => {
+          const da = Math.abs(a.x - unit.x) + Math.abs(a.y - unit.y)
+          const db = Math.abs(b.x - unit.x) + Math.abs(b.y - unit.y)
+          return da - db
+        })
+        for (const n of neighbors) {
+          if (n.x < 0 || n.x >= BOARD_WIDTH || n.y < 0 || n.y >= BOARD_HEIGHT) continue
+          const nk = key(n.x, n.y)
+          if (visited.has(nk)) continue
+          if (!(n.x === unit.x && n.y === unit.y) && occ.has(nk)) continue
+          visited.add(nk)
+          parent.set(nk, cur)
+          q.push(n)
+        }
+      }
+      if (!foundGoalKey) return
     }
 
     // Reconstruct path to found goal and take the first step
@@ -360,7 +413,7 @@ export function useGame() {
     // path[0] is the start; if length > 1, path[1] is our next step
     if (path.length > 1) {
       const next = path[1]
-      // Reserve via animateMove (which sets animToX/animToY) and move
+      // Follow BFS shortest path step, even if it requires a lateral move this tick
       animateMove(unit, next.x, next.y)
     }
   }
