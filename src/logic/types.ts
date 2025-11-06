@@ -1,5 +1,5 @@
 export type Team = 'A' | 'B'
-export type Role = 'Soldier'
+export type Role = 'Soldier' | 'Archer'
 export type UnitType = 'melee' | 'archer'
 export type Facing = 'N' | 'E' | 'S' | 'W'
 export type Phase = 'placement' | 'battle'
@@ -46,7 +46,8 @@ export interface RoleStats {
 }
 
 export const ROLE_STATS: Record<Role, RoleStats> = {
-  Soldier: { hp: 18, atk: 3, range: 1, type: 'melee' }
+  Soldier: { hp: 18, atk: 3, range: 1, type: 'melee' },
+  Archer: { hp: 12, atk: 2, range: 3, type: 'archer' }
 }
 
 export interface AttackEffect {
@@ -63,6 +64,16 @@ export interface ParticleEffect {
   x: number
   y: number
   timestamp: number
+}
+
+export interface ProjectileEffect {
+  id: string
+  fromX: number
+  fromY: number
+  toX: number
+  toY: number
+  progress: number // 0..1
+  color: string
 }
 
 export interface TileFlash {

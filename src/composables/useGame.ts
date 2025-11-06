@@ -12,7 +12,8 @@ import type {
   AttackEventHistory,
   UnitSnapshot,
   HistoryStep,
-  Facing
+  Facing,
+  ProjectileEffect
 } from '@/logic/types'
 import { ROLE_STATS } from '@/logic/types'
 import { id, rotateFacing, cellName } from '@/logic/utils'
@@ -38,6 +39,7 @@ export function useGame() {
   // Effects
   const attackEffects = ref<AttackEffect[]>([])
   const particleEffects = ref<ParticleEffect[]>([])
+  const projectileEffects = ref<ProjectileEffect[]>([])
   const tileFlashes = ref<TileFlash[]>([])
   const pathsByUnit = ref<Record<string, Coords[]>>({})
 
@@ -45,6 +47,35 @@ export function useGame() {
   const testOutput = ref<string[]>([])
   function addTestOutput(msg: string) {
     testOutput.value.push(msg)
+  }
+
+  function spawnProjectile(attacker: Unit, target: Unit) {
+    const proj: ProjectileEffect = {
+      id: id(),
+      fromX: attacker.x,
+      fromY: attacker.y,
+      toX: target.x,
+      toY: target.y,
+      progress: 0,
+      color: attacker.team === 'A' ? '#60a5fa' : '#f87171'
+    }
+    projectileEffects.value.push(proj)
+    addTestOutput(`T${tickCount} PROJECTILE ${attacker.id} -> ${target.id}`)
+    const duration = 750
+    const start = Date.now()
+    function step() {
+      const lin = Math.min(1, (Date.now() - start) / duration)
+      // ease-out cubic for smoother end
+      const eased = 1 - Math.pow(1 - lin, 3)
+      proj.progress = eased
+      if (lin < 1) {
+        requestAnimationFrame(step)
+      } else {
+        // cleanup at end
+        projectileEffects.value = projectileEffects.value.filter(p => p.id !== proj.id)
+      }
+    }
+    requestAnimationFrame(step)
   }
 
   let tickTimer: number | null = null
@@ -62,13 +93,13 @@ export function useGame() {
 
   const benchA = reactive([
     { role: 'Soldier' as Role, placed: false },
-    { role: 'Soldier' as Role, placed: false },
+    { role: 'Archer' as Role, placed: false },
     { role: 'Soldier' as Role, placed: false }
   ])
 
   const benchB = reactive([
     { role: 'Soldier' as Role, placed: false },
-    { role: 'Soldier' as Role, placed: false },
+    { role: 'Archer' as Role, placed: false },
     { role: 'Soldier' as Role, placed: false }
   ])
 
@@ -1055,18 +1086,24 @@ export function useGame() {
     })
 
     // Visual effects
-    const atkEffect: AttackEffect = {
-      id: id(),
-      fromX: attacker.x,
-      fromY: attacker.y,
-      toX: target.x,
-      toY: target.y,
-      timestamp: Date.now()
+    if (attacker.type === 'archer') {
+      // Animate a projectile flying from attacker to target
+      spawnProjectile(attacker, target)
+    } else {
+      // Melee hit flash
+      const atkEffect: AttackEffect = {
+        id: id(),
+        fromX: attacker.x,
+        fromY: attacker.y,
+        toX: target.x,
+        toY: target.y,
+        timestamp: Date.now()
+      }
+      attackEffects.value.push(atkEffect)
+      setTimeout(() => {
+        attackEffects.value = attackEffects.value.filter(e => e.id !== atkEffect.id)
+      }, 300)
     }
-    attackEffects.value.push(atkEffect)
-    setTimeout(() => {
-      attackEffects.value = attackEffects.value.filter(e => e.id !== atkEffect.id)
-    }, 300)
 
     const particle: ParticleEffect = {
       id: id(),
@@ -1179,6 +1216,7 @@ export function useGame() {
     placementComplete,
     attackEffects,
     particleEffects,
+    projectileEffects,
     tileFlashes,
     testOutput,
     pathsByUnit,

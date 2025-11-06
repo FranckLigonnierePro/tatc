@@ -43,6 +43,7 @@
           :height="BOARD_HEIGHT"
           :units="displayedUnits"
           :attack-effects="attackEffects"
+          :projectile-effects="projectileEffects"
           :particle-effects="particleEffects"
           :tile-flashes="tileFlashes"
           :cell-to-px="cellToPx"
@@ -90,6 +91,7 @@ const {
   benchB,
   placementComplete,
   attackEffects,
+  projectileEffects,
   particleEffects,
   tileFlashes,
   testOutput,

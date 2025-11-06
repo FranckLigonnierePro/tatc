@@ -40,7 +40,7 @@
       </div>
     </div>
 
-    <!-- SVG LOS layer -->
+    <!-- SVG LOS layer (under units) -->
     <svg
       class="absolute inset-0 pointer-events-none"
       :width="boardWidth"
@@ -88,6 +88,26 @@
       />
     </div>
 
+    <!-- Projectiles overlay (above units) -->
+    <svg
+      class="absolute inset-0 pointer-events-none"
+      :width="boardWidth"
+      :height="boardHeight"
+      style="z-index: 1"
+    >
+      <g>
+        <circle
+          v-for="p in projectileEffects"
+          :key="p.id"
+          :cx="cellCenterX(p.fromX) + (cellCenterX(p.toX) - cellCenterX(p.fromX)) * p.progress"
+          :cy="cellCenterY(p.fromY) + (cellCenterY(p.toY) - cellCenterY(p.fromY)) * p.progress"
+          r="6"
+          :fill="p.color"
+          opacity="1"
+        />
+      </g>
+    </svg>
+
     <!-- Particle effects -->
     <div
       v-for="particle in particleEffects"
@@ -103,7 +123,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { Unit, AttackEffect, ParticleEffect, TileFlash, Coords } from '@/logic/types'
+import type { Unit, AttackEffect, ParticleEffect, TileFlash, Coords, ProjectileEffect } from '@/logic/types'
 import { CELL_SIZE, CELL_GAP, BOARD_PADDING } from '@/composables/useGame'
 import { cellName } from '@/logic/utils'
 import UnitSprite from './UnitSprite.vue'
@@ -113,6 +133,7 @@ interface Props {
   height: number
   units: Unit[]
   attackEffects: AttackEffect[]
+  projectileEffects: ProjectileEffect[]
   particleEffects: ParticleEffect[]
   tileFlashes: TileFlash[]
   cellToPx: (x: number, y: number) => { px: number; py: number }
