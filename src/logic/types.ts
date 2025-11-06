@@ -1,5 +1,6 @@
 export type Team = 'A' | 'B'
 export type Role = 'Soldier'
+export type UnitType = 'melee' | 'archer'
 export type Facing = 'N' | 'E' | 'S' | 'W'
 export type Phase = 'placement' | 'battle'
 
@@ -12,6 +13,7 @@ export interface Unit {
   id: string
   team: Team
   role: Role
+  type: UnitType
   x: number
   y: number
   hp: number
@@ -19,8 +21,11 @@ export interface Unit {
   atk: number
   range: number
   facing: Facing
-  // Lock onto a target after first attack; unit won't move until target dies
-  lockedOnId?: string
+  // Target persistence: once an attack starts, keep focusing the same target
+  lockedTargetId?: string
+  // Special abilities
+  canTaunt?: boolean
+  invisibleTill?: number // timestamp until which unit is invisible
   // Animation state
   animX?: number
   animY?: number
@@ -36,10 +41,12 @@ export interface RoleStats {
   hp: number
   atk: number
   range: number
+  type: UnitType
+  canTaunt?: boolean
 }
 
 export const ROLE_STATS: Record<Role, RoleStats> = {
-  Soldier: { hp: 18, atk: 3, range: 1 }
+  Soldier: { hp: 18, atk: 3, range: 1, type: 'melee' }
 }
 
 export interface AttackEffect {
@@ -74,6 +81,9 @@ export interface MoveEvent {
   toY: number
   from: string // named cell
   to: string   // named cell
+  // Optional metadata for resolver tie-breaks
+  delta?: number // startDist - newDist (Manhattan improvement toward current target)
+  forward?: number // 1 if moving forward toward enemy baseline, else 0
 }
 
 export interface AttackEventHistory {

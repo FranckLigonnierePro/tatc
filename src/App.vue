@@ -120,6 +120,7 @@ const displayedUnits = computed<Unit[]>(() => {
       id: s.id,
       team: info.team,
       role: info.role,
+      type: stats.type,
       x: s.x,
       y: s.y,
       hp: s.hp,
