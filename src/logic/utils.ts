@@ -36,3 +36,10 @@ export function facingToArrow(facing: Facing): string {
 export function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min
 }
+
+// Name a cell using chess-like notation with letters for columns (A,B,...) and 1-based rows
+export function cellName(x: number, y: number): string {
+  const col = String.fromCharCode('A'.charCodeAt(0) + x)
+  const row = (y + 1).toString()
+  return `${col}${row}`
+}

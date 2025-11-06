@@ -21,18 +21,33 @@
         @reset="resetBO3"
       />
 
+      <!-- Replay controls -->
+      <div v-if="!running && history.length > 0" class="bg-slate-900/80 border border-slate-700 rounded-2xl p-3 shadow-xl flex items-center gap-3">
+        <button class="btn" @click="enterReplay" v-if="!replayMode">
+          ▶️ Enter Replay
+        </button>
+        <template v-else>
+          <button class="btn" @click="prevTick" :disabled="replayTick <= 0">⟨ Prev</button>
+          <input type="range" min="0" :max="history.length - 1" v-model.number="replayTick" class="flex-1" />
+          <button class="btn" @click="nextTick" :disabled="replayTick >= history.length - 1">Next ⟩</button>
+          <div class="text-sm text-slate-400 ml-2">Tick {{ replayTick + 1 }} / {{ history.length }}</div>
+          <button class="btn ml-auto" @click="exitReplay">⏹ Exit Replay</button>
+        </template>
+      </div>
+
       <!-- Main content -->
       <div class="grid grid-cols-1 md:grid-cols-[auto_1fr] gap-4 items-start">
         <!-- Board -->
         <Board
           :width="BOARD_WIDTH"
           :height="BOARD_HEIGHT"
-          :units="units"
+          :units="displayedUnits"
           :attack-effects="attackEffects"
           :particle-effects="particleEffects"
           :tile-flashes="tileFlashes"
           :cell-to-px="cellToPx"
           :hovered-unit="hoveredUnit"
+          :paths-by-unit="pathsByUnit"
           @drop="handleDrop"
           @rotate="rotateUnit"
           @drag-start="handleDragStart"
@@ -54,9 +69,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useGame, BOARD_WIDTH, BOARD_HEIGHT } from '@/composables/useGame'
-import type { Unit, Role } from '@/logic/types'
+import type { Unit, Role, UnitSnapshot } from '@/logic/types'
+import { ROLE_STATS } from '@/logic/types'
 import Board from '@/components/Board.vue'
 import Sidebar from '@/components/Sidebar.vue'
 import ControlsBar from '@/components/ControlsBar.vue'
@@ -75,6 +91,9 @@ const {
   particleEffects,
   tileFlashes,
   testOutput,
+  pathsByUnit,
+  history,
+  unitInfoById,
   placeUnit,
   rotateUnit,
   startBattle,
@@ -85,11 +104,54 @@ const {
 
 const hoveredUnit = ref<Unit | null>(null)
 
+// Replay state
+const replayMode = ref(false)
+const replayTick = ref(0)
+
+const displayedUnits = computed<Unit[]>(() => {
+  if (!replayMode.value) return units.value
+  const step = history.value[replayTick.value]
+  if (!step) return units.value
+  const mapped = step.units.map((s: UnitSnapshot) => {
+    const info = unitInfoById.value[s.id]
+    if (!info) return null
+    const stats = ROLE_STATS[info.role]
+    const u: Unit = {
+      id: s.id,
+      team: info.team,
+      role: info.role,
+      x: s.x,
+      y: s.y,
+      hp: s.hp,
+      maxHp: info.maxHp,
+      atk: stats.atk,
+      range: stats.range,
+      facing: info.facing
+    }
+    return u
+  })
+  return mapped.filter((u): u is Unit => u !== null)
+})
+
 function handleDrop(x: number, y: number, role: string) {
   placeUnit(role as Role, x, y)
 }
 
 function handleDragStart(unit: Unit) {
   hoveredUnit.value = unit
+}
+
+function enterReplay() {
+  replayMode.value = true
+  replayTick.value = 0
+}
+function exitReplay() {
+  replayMode.value = false
+}
+function prevTick() {
+  if (replayTick.value > 0) replayTick.value--
+}
+function nextTick() {
+  if (replayTick.value < history.value.length - 1) replayTick.value++
 }
 </script>

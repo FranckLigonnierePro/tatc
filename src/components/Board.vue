@@ -42,6 +42,23 @@
       :width="boardWidth"
       :height="boardHeight"
     >
+      <g>
+        <template v-for="unit in units" :key="`path-${unit.id}`">
+          <template v-if="pathsByUnit[unit.id] && pathsByUnit[unit.id].length > 1">
+            <line
+              v-for="(_, idx) in pathsByUnit[unit.id].slice(0, -1)"
+              :key="`seg-${unit.id}-${idx}`"
+              :x1="cellCenterX(pathsByUnit[unit.id][idx].x)"
+              :y1="cellCenterY(pathsByUnit[unit.id][idx].y)"
+              :x2="cellCenterX(pathsByUnit[unit.id][idx + 1].x)"
+              :y2="cellCenterY(pathsByUnit[unit.id][idx + 1].y)"
+              :stroke="unit.team === 'A' ? '#60a5fa' : '#f87171'"
+              stroke-width="3"
+              opacity="0.6"
+            />
+          </template>
+        </template>
+      </g>
       <line
         v-for="effect in attackEffects"
         :key="effect.id"
@@ -82,7 +99,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { Unit, AttackEffect, ParticleEffect, TileFlash } from '@/logic/types'
+import type { Unit, AttackEffect, ParticleEffect, TileFlash, Coords } from '@/logic/types'
 import { CELL_SIZE, CELL_GAP, BOARD_PADDING } from '@/composables/useGame'
 import UnitSprite from './UnitSprite.vue'
 
@@ -95,6 +112,7 @@ interface Props {
   tileFlashes: TileFlash[]
   cellToPx: (x: number, y: number) => { px: number; py: number }
   hoveredUnit?: Unit | null
+  pathsByUnit: Record<string, Coords[]>
 }
 
 const props = defineProps<Props>()

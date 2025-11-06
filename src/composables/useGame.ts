@@ -6,10 +6,16 @@ import type {
   Phase,
   AttackEffect,
   ParticleEffect,
-  TileFlash
+  TileFlash,
+  Coords,
+  MoveEvent,
+  AttackEventHistory,
+  UnitSnapshot,
+  HistoryStep,
+  Facing
 } from '@/logic/types'
 import { ROLE_STATS } from '@/logic/types'
-import { id, chebyshev, rotateFacing } from '@/logic/utils'
+import { id, chebyshev, rotateFacing, cellName } from '@/logic/utils'
 
 export const BOARD_WIDTH = 5
 export const BOARD_HEIGHT = 8
@@ -33,12 +39,20 @@ export function useGame() {
   const attackEffects = ref<AttackEffect[]>([])
   const particleEffects = ref<ParticleEffect[]>([])
   const tileFlashes = ref<TileFlash[]>([])
+  const pathsByUnit = ref<Record<string, Coords[]>>({})
 
   // Test output
   const testOutput = ref<string[]>([])
 
   let tickTimer: number | null = null
   let animationFrame: number | null = null
+  let tickCount = 0
+
+  // History recording
+  const history = ref<HistoryStep[]>([])
+  let pendingMoves: MoveEvent[] = []
+  let pendingAttacks: AttackEventHistory[] = []
+  const unitInfoById = ref<Record<string, { role: Role; maxHp: number; facing: Facing; team: Team }>>({})
 
   const bench = reactive([
     { role: 'Soldier' as Role, placed: false },
@@ -107,6 +121,8 @@ export function useGame() {
     attackEffects.value = []
     particleEffects.value = []
     tileFlashes.value = []
+    history.value = []
+    tickCount = 0
     if (tickTimer !== null) {
       clearInterval(tickTimer)
       tickTimer = null
@@ -155,6 +171,14 @@ export function useGame() {
       }
     }
 
+    // Reset history on battle start
+    history.value = []
+    tickCount = 0
+    // Capture base unit info for replay rendering
+    unitInfoById.value = {}
+    for (const u of units.value) {
+      unitInfoById.value[u.id] = { role: u.role, maxHp: u.maxHp, facing: u.facing, team: u.team }
+    }
     running.value = true
     startTicking()
   }
@@ -172,6 +196,10 @@ export function useGame() {
     // Snapshot units
     const snapshot = [...units.value]
 
+    // Reset per-tick recorded events
+    pendingMoves = []
+    pendingAttacks = []
+
     for (const snap of snapshot) {
       // Always operate on the live unit from state, not the snapshot copy
       const unit = units.value.find(u => u.id === snap.id)
@@ -179,7 +207,16 @@ export function useGame() {
       // If unit is currently animating a move, skip acting this tick to avoid double-issuing moves
       if (unit.animProgress !== undefined) continue
 
-      const enemy = findClosestEnemy(unit)
+      // Use locked target if any and alive
+      let enemy: Unit | null = null
+      if (unit.lockedOnId) {
+        enemy = units.value.find(u => u.id === unit.lockedOnId) || null
+        if (!enemy || enemy.hp <= 0) {
+          unit.lockedOnId = undefined
+          enemy = null
+        }
+      }
+      if (!enemy) enemy = findClosestEnemy(unit)
       if (!enemy) continue
 
       const dist = chebyshev(unit, enemy)
@@ -191,14 +228,39 @@ export function useGame() {
         if (!unit.lastAttackAt || now - unit.lastAttackAt >= cd) {
           attack(unit, enemy)
         }
+        // No movement when in range
+        delete pathsByUnit.value[unit.id]
       } else {
-        // Move toward
-        moveToward(unit, enemy)
+        // Movement rules: if locked, do not move. Else, forward-first steering with lateral toward nearby enemy column
+        if (!unit.lockedOnId) {
+          moveSteered(unit, enemy)
+        } else {
+          delete pathsByUnit.value[unit.id]
+        }
       }
     }
 
     // Remove dead units
     units.value = units.value.filter(u => u.hp > 0)
+    // Prune paths of missing units
+    const aliveIds = new Set(units.value.map(u => u.id))
+    for (const k of Object.keys(pathsByUnit.value)) {
+      if (!aliveIds.has(k)) delete pathsByUnit.value[k]
+    }
+    // Clear locks pointing to dead units (safety)
+    for (const u of units.value) {
+      if (u.lockedOnId && !aliveIds.has(u.lockedOnId)) u.lockedOnId = undefined
+    }
+
+    // Push history step for this tick
+    const unitSnaps: UnitSnapshot[] = units.value.map(u => ({ id: u.id, team: u.team, x: u.x, y: u.y, hp: u.hp }))
+    history.value.push({
+      tick: tickCount,
+      moves: pendingMoves,
+      attacks: pendingAttacks,
+      units: unitSnaps
+    })
+    tickCount++
 
     // Check round end
     const teamA = units.value.filter(u => u.team === 'A')
@@ -230,6 +292,21 @@ export function useGame() {
   function attack(attacker: Unit, target: Unit) {
     attacker.lastAttackAt = Date.now()
     target.hp -= attacker.atk
+    // Lock onto this target after first successful hit
+    if (!attacker.lockedOnId) attacker.lockedOnId = target.id
+
+    // Record attack in history
+    pendingAttacks.push({
+      attackerId: attacker.id,
+      targetId: target.id,
+      fromX: attacker.x,
+      fromY: attacker.y,
+      toX: target.x,
+      toY: target.y,
+      from: cellName(attacker.x, attacker.y),
+      to: cellName(target.x, target.y),
+      damage: attacker.atk
+    })
 
     // Visual effects
     const atkEffect: AttackEffect = {
@@ -267,154 +344,72 @@ export function useGame() {
     }, 300)
   }
 
-  function moveToward(unit: Unit, target: Unit) {
+  function moveSteered(unit: Unit, target: Unit) {
     // If already in range (Chebyshev), don't move
     if (chebyshev(unit, target) <= unit.range) {
+      delete pathsByUnit.value[unit.id]
       return
     }
 
-    // Build occupied set (positions and reserved animation destinations)
-    const occ = new Set<string>()
     const key = (x: number, y: number) => `${x},${y}`
+    const occ = new Set<string>()
     for (const u of units.value) {
       if (u.hp <= 0) continue
-      // Block other units' current cells
       if (u.id !== unit.id) occ.add(key(u.x, u.y))
-      // Block their reserved animation destinations
       if (u.id !== unit.id && u.animToX !== undefined && u.animToY !== undefined) {
         occ.add(key(u.animToX, u.animToY))
       }
     }
 
-    // Helper to collect in-range goal cells for a given enemy
-    const collectGoals = (enemy: Unit) => {
-      const g: { x: number; y: number }[] = []
-      for (let yy = 0; yy < BOARD_HEIGHT; yy++) {
-        for (let xx = 0; xx < BOARD_WIDTH; xx++) {
-          if (chebyshev({ x: xx, y: yy } as any, enemy) <= unit.range) {
-            if (!occ.has(key(xx, yy)) || (xx === unit.x && yy === unit.y)) {
-              g.push({ x: xx, y: yy })
-            }
-          }
-        }
-      }
-      return g
+    // Determine forward direction: Team A goes down (+1), Team B goes up (-1)
+    const forwardDy = unit.team === 'A' ? 1 : -1
+    const forwardX = unit.x
+    const forwardY = unit.y + forwardDy
+
+    const inBounds = (x: number, y: number) => x >= 0 && x < BOARD_WIDTH && y >= 0 && y < BOARD_HEIGHT
+    const isFree = (x: number, y: number) => inBounds(x, y) && !occ.has(key(x, y))
+
+    // Check if there is a nearby enemy on a parallel column; if so, bias lateral toward enemy.x
+    // "Proche": use Manhattan distance <= 2 as heuristic
+    let lateralBias: -1 | 0 | 1 = 0
+    const manhattanDist = Math.abs(unit.x - target.x) + Math.abs(unit.y - target.y)
+    if (manhattanDist <= 2 && target.x !== unit.x) {
+      lateralBias = target.x < unit.x ? -1 : 1
     }
 
-    // First try goals around the chosen target
-    const goals: { x: number; y: number }[] = collectGoals(target)
-    if (goals.length === 0) return
+    // Candidate moves by priority:
+    // 1) If lateralBias set and lateral cell is free, step toward enemy column
+    // 2) Else, go straight forward if free
+    // 3) Else, try the other lateral (to navigate around blockers)
+    // 4) Else, stay
+    const tryMoves: Array<{ x: number; y: number }> = []
+    if (lateralBias !== 0) tryMoves.push({ x: unit.x + lateralBias, y: unit.y })
+    tryMoves.push({ x: forwardX, y: forwardY })
+    if (lateralBias !== 0) tryMoves.push({ x: unit.x - lateralBias, y: unit.y })
 
-    // BFS for shortest path from unit to nearest goal
-    const q: { x: number; y: number }[] = []
-    const visited = new Set<string>()
-    const parent = new Map<string, { x: number; y: number } | null>()
+    let chosen: { x: number; y: number } | null = null
+    for (const m of tryMoves) {
+      if (isFree(m.x, m.y)) { chosen = m; break }
+    }
 
-    const start = { x: unit.x, y: unit.y }
-    const startKey = key(start.x, start.y)
-    q.push(start)
-    visited.add(startKey)
-    parent.set(startKey, null)
+    if (chosen) {
+      // Minimal path for visualization: current -> chosen
+      pathsByUnit.value[unit.id] = [ { x: unit.x, y: unit.y }, { x: chosen.x, y: chosen.y } ]
 
-    const isGoalKey = new Set(goals.map(g => key(g.x, g.y)))
-
-    let foundGoalKey: string | null = null
-
-    while (q.length > 0 && !foundGoalKey) {
-      const cur = q.shift()!
-      const ck = key(cur.x, cur.y)
-      if (isGoalKey.has(ck)) {
-        foundGoalKey = ck
-        break
-      }
-
-      // Explore neighbors biased toward the target to prefer straighter paths
-      const neighbors = [
-        { x: cur.x + 1, y: cur.y },
-        { x: cur.x - 1, y: cur.y },
-        { x: cur.x, y: cur.y + 1 },
-        { x: cur.x, y: cur.y - 1 }
-      ].sort((a, b) => {
-        const da = Math.abs(a.x - target.x) + Math.abs(a.y - target.y)
-        const db = Math.abs(b.x - target.x) + Math.abs(b.y - target.y)
-        return da - db
+      // Record move in history (logical move for this tick)
+      pendingMoves.push({
+        unitId: unit.id,
+        team: unit.team,
+        fromX: unit.x,
+        fromY: unit.y,
+        toX: chosen.x,
+        toY: chosen.y,
+        from: cellName(unit.x, unit.y),
+        to: cellName(chosen.x, chosen.y)
       })
-
-      for (const n of neighbors) {
-        if (n.x < 0 || n.x >= BOARD_WIDTH || n.y < 0 || n.y >= BOARD_HEIGHT) continue
-        const nk = key(n.x, n.y)
-        if (visited.has(nk)) continue
-        // Allow standing on our current tile even if marked (we added others only)
-        if (!(n.x === unit.x && n.y === unit.y) && occ.has(nk)) continue
-        visited.add(nk)
-        parent.set(nk, cur)
-        q.push(n)
-      }
-    }
-
-    if (!foundGoalKey) {
-      // Fallback: try any enemy's in-range goals if the nearest is unreachable
-      const enemies = units.value.filter(u => u.team !== unit.team && u.hp > 0)
-      const allGoals: { x: number; y: number }[] = []
-      for (const e of enemies) {
-        if (e.id === target.id) continue
-        allGoals.push(...collectGoals(e))
-      }
-      if (allGoals.length === 0) return
-
-      // Re-run BFS with all goals
-      q.length = 0
-      visited.clear()
-      parent.clear()
-      const isGoalKey2 = new Set(allGoals.map(g => key(g.x, g.y)))
-      q.push(start)
-      visited.add(startKey)
-      parent.set(startKey, null)
-      while (q.length > 0 && !foundGoalKey) {
-        const cur = q.shift()!
-        const ck = key(cur.x, cur.y)
-        if (isGoalKey2.has(ck)) {
-          foundGoalKey = ck
-          break
-        }
-        const neighbors = [
-          { x: cur.x + 1, y: cur.y },
-          { x: cur.x - 1, y: cur.y },
-          { x: cur.x, y: cur.y + 1 },
-          { x: cur.x, y: cur.y - 1 }
-        ].sort((a, b) => {
-          const da = Math.abs(a.x - unit.x) + Math.abs(a.y - unit.y)
-          const db = Math.abs(b.x - unit.x) + Math.abs(b.y - unit.y)
-          return da - db
-        })
-        for (const n of neighbors) {
-          if (n.x < 0 || n.x >= BOARD_WIDTH || n.y < 0 || n.y >= BOARD_HEIGHT) continue
-          const nk = key(n.x, n.y)
-          if (visited.has(nk)) continue
-          if (!(n.x === unit.x && n.y === unit.y) && occ.has(nk)) continue
-          visited.add(nk)
-          parent.set(nk, cur)
-          q.push(n)
-        }
-      }
-      if (!foundGoalKey) return
-    }
-
-    // Reconstruct path to found goal and take the first step
-    const path: { x: number; y: number }[] = []
-    let curKey: string | null = foundGoalKey
-    while (curKey) {
-      const [sx, sy] = curKey.split(',').map(Number)
-      path.unshift({ x: sx, y: sy })
-      const p = parent.get(curKey)
-      curKey = p ? key(p.x, p.y) : null
-    }
-
-    // path[0] is the start; if length > 1, path[1] is our next step
-    if (path.length > 1) {
-      const next = path[1]
-      // Follow BFS shortest path step, even if it requires a lateral move this tick
-      animateMove(unit, next.x, next.y)
+      animateMove(unit, chosen.x, chosen.y)
+    } else {
+      delete pathsByUnit.value[unit.id]
     }
   }
 
@@ -476,7 +471,7 @@ export function useGame() {
       alert(`BO3 Complete! Team ${finalWinner} wins ${Math.max(teamAWins.value, teamBWins.value)}-${Math.min(teamAWins.value, teamBWins.value)}`)
     } else {
       round.value++
-      setTimeout(() => enterPlacement(), 1000)
+      // Do not auto-reset to placement to allow replay stepping
     }
   }
 
@@ -512,6 +507,9 @@ export function useGame() {
     particleEffects,
     tileFlashes,
     testOutput,
+    pathsByUnit,
+    history,
+    unitInfoById,
 
     // Methods
     placeUnit,

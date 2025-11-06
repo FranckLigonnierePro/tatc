@@ -19,6 +19,8 @@ export interface Unit {
   atk: number
   range: number
   facing: Facing
+  // Lock onto a target after first attack; unit won't move until target dies
+  lockedOnId?: string
   // Animation state
   animX?: number
   animY?: number
@@ -60,4 +62,43 @@ export interface TileFlash {
   x: number
   y: number
   timestamp: number
+}
+
+// History for post-battle replay/step-through
+export interface MoveEvent {
+  unitId: string
+  team: Team
+  fromX: number
+  fromY: number
+  toX: number
+  toY: number
+  from: string // named cell
+  to: string   // named cell
+}
+
+export interface AttackEventHistory {
+  attackerId: string
+  targetId: string
+  fromX: number
+  fromY: number
+  toX: number
+  toY: number
+  from: string // attacker cell name at time of hit
+  to: string   // target cell name at time of hit
+  damage: number
+}
+
+export interface UnitSnapshot {
+  id: string
+  team: Team
+  x: number
+  y: number
+  hp: number
+}
+
+export interface HistoryStep {
+  tick: number
+  moves: MoveEvent[]
+  attacks: AttackEventHistory[]
+  units: UnitSnapshot[] // positions and hp after the tick is processed
 }
