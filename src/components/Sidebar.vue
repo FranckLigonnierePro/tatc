@@ -2,7 +2,10 @@
   <div class="space-y-4">
     <!-- Bench -->
     <div class="bg-slate-900/80 border border-slate-700 rounded-2xl p-3 shadow-xl">
-      <Bench :bench="bench" />
+      <div class="grid grid-cols-2 gap-4">
+        <Bench :bench="benchA" team="A" />
+        <Bench :bench="benchB" team="B" />
+      </div>
     </div>
 
     <!-- Round info -->
@@ -54,16 +57,17 @@
 </template>
 
 <script setup lang="ts">
-import type { Phase } from '@/logic/types'
+import type { Phase, Role } from '@/logic/types'
 import Bench from './Bench.vue'
 
 interface BenchItem {
-  role: string
+  role: Role
   placed: boolean
 }
 
 interface Props {
-  bench: BenchItem[]
+  benchA: BenchItem[]
+  benchB: BenchItem[]
   round: number
   maxRounds: number
   teamAWins: number

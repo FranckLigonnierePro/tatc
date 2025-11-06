@@ -21,7 +21,7 @@
       class="w-16 h-16 rounded-xl font-extrabold text-white grid place-items-center shadow-lg text-sm"
       :class="chipClass"
     >
-      {{ unit.role[0] }}
+      {{ idLabel }}
     </div>
 
     <!-- HP bar -->
@@ -65,6 +65,8 @@ const chipClass = computed(() => {
   const base = props.unit.team === 'A' ? 'bg-blue-600' : 'bg-red-600'
   return base
 })
+
+const idLabel = computed(() => props.unit.id.slice(-4))
 
 const hpPercent = computed(() => {
   return Math.max(0, (props.unit.hp / props.unit.maxHp) * 100)

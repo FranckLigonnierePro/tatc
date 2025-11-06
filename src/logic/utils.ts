@@ -2,7 +2,9 @@ import type { Coords, Facing } from './types'
 
 let idCounter = 0
 export function id(): string {
-  return `id_${++idCounter}_${Date.now()}`
+  idCounter += 1
+  // Fixed short ID, zero-padded to 4 digits (e.g., 0001, 0002, ...)
+  return String(idCounter).padStart(4, '0')
 }
 
 export function manhattan(a: Coords, b: Coords): number {

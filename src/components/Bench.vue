@@ -1,7 +1,7 @@
 <template>
   <div class="space-y-2">
     <h3 class="text-sm font-bold text-slate-300 uppercase tracking-wide">
-      Bench
+      Bench {{ team }}
     </h3>
     <div class="flex gap-2">
       <div
@@ -16,10 +16,10 @@
       </div>
     </div>
   </div>
-</template>
+  </template>
 
 <script setup lang="ts">
-import type { Role } from '@/logic/types'
+import type { Role, Team } from '@/logic/types'
 
 interface BenchItem {
   role: Role
@@ -28,17 +28,18 @@ interface BenchItem {
 
 interface Props {
   bench: BenchItem[]
+  team: Team
 }
 
-defineProps<Props>()
+const props = defineProps<Props>()
 
 function cardClass(_role: Role): string {
-  // Single role: Soldier
-  return 'bg-blue-600 border-blue-500'
+  return props.team === 'A' ? 'bg-blue-600 border-blue-500' : 'bg-red-600 border-red-500'
 }
 
 function handleDragStart(event: DragEvent, role: Role) {
   event.dataTransfer!.effectAllowed = 'copy'
   event.dataTransfer!.setData('role', role)
+  event.dataTransfer!.setData('team', props.team)
 }
 </script>

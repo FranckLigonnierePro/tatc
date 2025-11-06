@@ -55,7 +55,8 @@
 
         <!-- Sidebar -->
         <Sidebar
-          :bench="bench"
+          :bench-a="benchA"
+          :bench-b="benchB"
           :round="round"
           :max-rounds="maxRounds"
           :team-a-wins="teamAWins"
@@ -71,7 +72,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useGame, BOARD_WIDTH, BOARD_HEIGHT } from '@/composables/useGame'
-import type { Unit, Role, UnitSnapshot } from '@/logic/types'
+import type { Unit, Role, UnitSnapshot, Team } from '@/logic/types'
 import { ROLE_STATS } from '@/logic/types'
 import Board from '@/components/Board.vue'
 import Sidebar from '@/components/Sidebar.vue'
@@ -85,7 +86,8 @@ const {
   maxRounds,
   teamAWins,
   teamBWins,
-  bench,
+  benchA,
+  benchB,
   placementComplete,
   attackEffects,
   particleEffects,
@@ -134,8 +136,9 @@ const displayedUnits = computed<Unit[]>(() => {
   return mapped.filter((u): u is Unit => u !== null)
 })
 
-function handleDrop(x: number, y: number, role: string) {
-  placeUnit(role as Role, x, y)
+function handleDrop(x: number, y: number, role: string, team?: string) {
+  const t = (team === 'A' || team === 'B' ? team : 'A') as Team
+  placeUnit(role as Role, x, y, t)
 }
 
 function handleDragStart(unit: Unit) {

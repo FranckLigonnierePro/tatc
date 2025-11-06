@@ -23,7 +23,7 @@
         <div
           v-for="x in width"
           :key="`tile-${x - 1}-${y - 1}`"
-          class="tile rounded-xl border border-slate-700/60 bg-slate-800/60 transition-colors hover:bg-slate-700/60 cursor-pointer"
+          class="tile relative rounded-xl border border-slate-700/60 bg-slate-800/60 transition-colors hover:bg-slate-700/60 cursor-pointer"
           :class="{
             'ring-2 ring-emerald-400/70': isInRange(x - 1, y - 1),
             'animate-tile-flash': hasFlash(x - 1, y - 1)
@@ -32,7 +32,11 @@
           @drop="handleDrop($event, x - 1, y - 1)"
           @dragover.prevent
           @dragenter.prevent
-        />
+        >
+          <span class="pointer-events-none select-none absolute top-1 left-1 text-[10px] leading-none text-slate-400/80">
+            {{ cellName(x - 1, y - 1).toLowerCase() }}
+          </span>
+        </div>
       </div>
     </div>
 
@@ -101,6 +105,7 @@
 import { computed } from 'vue'
 import type { Unit, AttackEffect, ParticleEffect, TileFlash, Coords } from '@/logic/types'
 import { CELL_SIZE, CELL_GAP, BOARD_PADDING } from '@/composables/useGame'
+import { cellName } from '@/logic/utils'
 import UnitSprite from './UnitSprite.vue'
 
 interface Props {
@@ -117,7 +122,7 @@ interface Props {
 
 const props = defineProps<Props>()
 const emit = defineEmits<{
-  drop: [x: number, y: number, role: string]
+  drop: [x: number, y: number, role: string, team?: string]
   rotate: [unitId: string]
   dragStart: [unit: Unit]
 }>()
@@ -156,8 +161,9 @@ function cellCenterY(y: number): number {
 
 function handleDrop(event: DragEvent, x: number, y: number) {
   const role = event.dataTransfer?.getData('role')
+  const team = event.dataTransfer?.getData('team')
   if (role) {
-    emit('drop', x, y, role)
+    emit('drop', x, y, role, team)
   }
 }
 

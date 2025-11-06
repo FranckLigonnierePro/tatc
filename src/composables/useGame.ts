@@ -43,6 +43,9 @@ export function useGame() {
 
   // Test output
   const testOutput = ref<string[]>([])
+  function addTestOutput(msg: string) {
+    testOutput.value.push(msg)
+  }
 
   let tickTimer: number | null = null
   let animationFrame: number | null = null
@@ -55,14 +58,23 @@ export function useGame() {
   const unitInfoById = ref<Record<string, { role: Role; maxHp: number; facing: Facing; team: Team }>>({})
   const lastPosition = new Map<string, string>() // unitId -> 'x,y' of previous position
   const deniedStreak = new Map<string, number>() // unitId -> consecutive ticks without allowed move when intending
+  const lockExpires = new Map<string, number>() // unitId -> tick number when movement lock may be reconsidered
 
-  const bench = reactive([
+  const benchA = reactive([
     { role: 'Soldier' as Role, placed: false },
     { role: 'Soldier' as Role, placed: false },
     { role: 'Soldier' as Role, placed: false }
   ])
 
-  const placementComplete = computed(() => bench.every(b => b.placed))
+  const benchB = reactive([
+    { role: 'Soldier' as Role, placed: false },
+    { role: 'Soldier' as Role, placed: false },
+    { role: 'Soldier' as Role, placed: false }
+  ])
+
+  const placementComplete = computed(() =>
+    benchA.every(b => b.placed) && benchB.every(b => b.placed)
+  )
 
   function cellToPx(x: number, y: number): { px: number; py: number } {
     const px = BOARD_PADDING + x * (CELL_SIZE + CELL_GAP)
@@ -139,19 +151,23 @@ export function useGame() {
     }
   }
 
-  function placeUnit(role: Role, x: number, y: number): boolean {
-    // Only allow placement in rows y <= 1
-    if (y > 3) return false
+  function placeUnit(role: Role, x: number, y: number, team: Team): boolean {
     if (phase.value !== 'placement') return false
+
+    // Enforce team zones
+    const inZoneA = y >= 0 && y <= 3
+    const inZoneB = y >= BOARD_HEIGHT - 4 && y <= BOARD_HEIGHT - 1
+    if ((team === 'A' && !inZoneA) || (team === 'B' && !inZoneB)) return false
 
     // Check if cell is occupied
     if (units.value.some(u => u.x === x && u.y === y)) return false
 
-    // Find bench item
-    const benchItem = bench.find(b => b.role === role && !b.placed)
+    // Find bench item for the selected team
+    const benchSet = team === 'A' ? benchA : benchB
+    const benchItem = benchSet.find(b => b.role === role && !b.placed)
     if (!benchItem) return false
 
-    const unit = createUnit(role, 'A', x, y)
+    const unit = createUnit(role, team, x, y)
     units.value.push(unit)
     benchItem.placed = true
 
@@ -169,7 +185,8 @@ export function useGame() {
     phase.value = 'placement'
     running.value = false
     units.value = []
-    bench.forEach(b => (b.placed = false))
+    benchA.forEach(b => (b.placed = false))
+    benchB.forEach(b => (b.placed = false))
     attackEffects.value = []
     particleEffects.value = []
     tileFlashes.value = []
@@ -191,39 +208,6 @@ export function useGame() {
     if (!placementComplete.value) return
 
     phase.value = 'battle'
-
-    // Auto-place team B randomly within their zone (bottom 4 rows)
-    const teamAUnits = units.value.filter(u => u.team === 'A')
-    const bMinY = Math.max(0, BOARD_HEIGHT - 4)
-    const bMaxY = BOARD_HEIGHT - 1
-    for (const ua of teamAUnits) {
-      // Try random free positions up to some attempts
-      let placed = false
-      for (let attempt = 0; attempt < 200 && !placed; attempt++) {
-        const rx = Math.floor(Math.random() * BOARD_WIDTH)
-        const ry = Math.floor(Math.random() * (bMaxY - bMinY + 1)) + bMinY
-        const occupied = units.value.some(u => u.x === rx && u.y === ry)
-        if (!occupied) {
-          const unit = createUnit(ua.role, 'B', rx, ry)
-          units.value.push(unit)
-          placed = true
-        }
-      }
-      // Fallback: if not found, place mirrored as last resort
-      if (!placed) {
-        const mirrorY = BOARD_HEIGHT - 1 - ua.y
-        const unit = createUnit(ua.role, 'B', ua.x, mirrorY)
-        // Avoid collision by shifting x if needed
-        let px = unit.x
-        let tries = 0
-        while (units.value.some(u => u.x === px && u.y === unit.y) && tries < BOARD_WIDTH) {
-          px = (px + 1) % BOARD_WIDTH
-          tries++
-        }
-        unit.x = px
-        units.value.push(unit)
-      }
-    }
 
     // Reset history on battle start
     history.value = []
@@ -271,10 +255,31 @@ export function useGame() {
       if (unit.lockedTargetId) {
         target = units.value.find(u => u.id === unit.lockedTargetId && u.hp > 0) || null
         if (!target) unit.lockedTargetId = undefined
+        else {
+          const lockUntil = lockExpires.get(unit.id) ?? -1
+          const canProg = canTwoStepProgress(unit, target, occupied)
+          if (tickCount >= lockUntil) {
+            const alt = selectTarget(unit, occupied)
+            if (alt && alt.id !== target.id) {
+              // Compare scores: break lock only if no progress or alt clearly better
+              const curS = scoreTargetFor(unit, target, occupied)
+              const altS = scoreTargetFor(unit, alt, occupied)
+              const altBetter = altS.attackKey < curS.attackKey || altS.newDist < curS.newDist
+              if (!canProg || altBetter) {
+                unit.lockedTargetId = undefined
+                target = alt
+              }
+            }
+          }
+        }
       }
-      if (!target) target = selectTarget(unit)
+      if (!target) target = selectTarget(unit, occupied)
+      if (target && !unit.lockedTargetId) {
+        unit.lockedTargetId = target.id
+        lockExpires.set(unit.id, tickCount + 2)
+      }
       if (!target) {
-        addTestOutput(`T${tickCount} ${unit.team} ${cellName(unit.x, unit.y)} no target`)
+        addTestOutput(`T${tickCount} ${unit.id}(${unit.team}) ${cellName(unit.x, unit.y)} no target`)
         continue
       }
 
@@ -313,8 +318,20 @@ export function useGame() {
       const u = units.value.find(x => x.id === unitId)
       if (!u) continue
       let target: Unit | null = null
-      if (u.lockedTargetId) target = units.value.find(x => x.id === u.lockedTargetId && x.hp > 0) || null
-      if (!target) target = selectTarget(u)
+      if (u.lockedTargetId) {
+        target = units.value.find(x => x.id === u.lockedTargetId && x.hp > 0) || null
+        if (target) {
+          const canProg = canTwoStepProgress(u, target, occupied)
+          if (!canProg) {
+            const alt = selectTarget(u, occupied)
+            if (alt && alt.id !== target.id) {
+              u.lockedTargetId = undefined
+              target = alt
+            }
+          }
+        }
+      }
+      if (!target) target = selectTarget(u, occupied)
       if (!target) continue
       const startDist = manhattan(u, target)
       const neighbors = [
@@ -324,32 +341,60 @@ export function useGame() {
         { x: u.x, y: u.y - 1, axis: 'y', dir: -1 }
       ]
       const inBounds = (x: number, y: number) => x >= 0 && x < BOARD_WIDTH && y >= 0 && y < BOARD_HEIGHT
-      const edges: MoveEvent[] = neighbors
-        .filter(n => inBounds(n.x, n.y))
-        .map(n => {
-          const newDist = manhattan({ x: n.x, y: n.y }, target!)
-          return {
-            unitId: u.id,
-            team: u.team,
-            fromX: u.x,
-            fromY: u.y,
-            toX: n.x,
-            toY: n.y,
-            from: cellName(u.x, u.y),
-            to: cellName(n.x, n.y),
-            delta: startDist - newDist,
-            forward: (n.axis === 'y' && ((u.team === 'A' && n.dir === 1) || (u.team === 'B' && n.dir === -1))) ? 1 : 0
-          } as MoveEvent
-        })
+      const buildEdges = (t: Unit): (MoveEvent & { backtrack?: number })[] =>
+        neighbors
+          .filter(n => inBounds(n.x, n.y))
+          .map(n => {
+            const newDist = manhattan({ x: n.x, y: n.y }, t)
+            const was = lastPosition.get(u.id)
+            const isBack = was === `${n.x},${n.y}` ? 1 : 0
+            return {
+              unitId: u.id,
+              team: u.team,
+              fromX: u.x,
+              fromY: u.y,
+              toX: n.x,
+              toY: n.y,
+              from: cellName(u.x, u.y),
+              to: cellName(n.x, n.y),
+              delta: startDist - newDist,
+              forward: (n.axis === 'y' && ((u.team === 'A' && n.dir === 1) || (u.team === 'B' && n.dir === -1))) ? 1 : 0,
+              backtrack: isBack
+            } as MoveEvent
+          })
 
-      // Sort edges by fairness-aware comparator (and prefer empty-at-start destinations)
+      let edges = buildEdges(target)
+      // If no edge reduces distance to current target, try retargeting to a more approachable enemy for this tick
+      if (!edges.some(e => (e.delta ?? 0) > 0)) {
+        const alt = selectTarget(u, occupied)
+        if (alt && alt.id !== target.id) {
+          addTestOutput(`T${tickCount} ${u.id}(${u.team}) retarget ${target.id} -> ${alt.id} (no progress possible)`) 
+          target = alt
+          const newStart = manhattan(u, target)
+          // Rebuild edges with new startDist
+          edges = buildEdges(target).map(e => ({ ...e, delta: newStart - (newStart - (e.delta ?? 0)) }))
+        }
+      }
+
+      // Sort edges by comparator prioritizing: attack-next, then empty-at-start, then delta, then forward
       const sa = deniedStreak.get(u.id) ?? 0
       edges.sort((a, b) => {
         const sba = sa, sbb = sa // same unit
         if (sba !== sbb) return sbb - sba
+        // Prefer destinations from which we can attack the target immediately next tick
+        const attackFrom = (x: number, y: number) => {
+          const pseudo: Unit = { ...u, x, y }
+          return canAttack(pseudo, target!)
+        }
+        const aAttack = attackFrom(a.toX, a.toY) ? 0 : 1
+        const bAttack = attackFrom(b.toX, b.toY) ? 0 : 1
+        if (aAttack !== bAttack) return aAttack - bAttack
         const ea = startOcc.has(`${a.toX},${a.toY}`) ? 1 : 0
         const eb = startOcc.has(`${b.toX},${b.toY}`) ? 1 : 0
         if (ea !== eb) return ea - eb // prefer empty-at-start (0) over occupied (1)
+        const ab = a.backtrack ?? 0
+        const bb = b.backtrack ?? 0
+        if (ab !== bb) return ab - bb // prefer non-backtrack (0) over backtrack (1)
         const da = (a.delta ?? 0), db = (b.delta ?? 0)
         if (da !== db) return db - da
         const fa = (a.forward ?? 0), fb = (b.forward ?? 0)
@@ -487,8 +532,44 @@ export function useGame() {
     return Math.abs(a.x - b.x) + Math.abs(a.y - b.y)
   }
 
+  // Check if unit can make two-step progress toward target without immediately bouncing back
+  function canTwoStepProgress(unit: Unit, target: Unit, occupied: Set<string>): boolean {
+    const inBounds = (x: number, y: number) => x >= 0 && x < BOARD_WIDTH && y >= 0 && y < BOARD_HEIGHT
+    const neighbors = [
+      { x: unit.x + 1, y: unit.y },
+      { x: unit.x - 1, y: unit.y },
+      { x: unit.x, y: unit.y + 1 },
+      { x: unit.x, y: unit.y - 1 }
+    ]
+    const distNow = manhattan(unit, target)
+    for (const n of neighbors) {
+      if (!inBounds(n.x, n.y)) continue
+      if (occupied.has(`${n.x},${n.y}`)) continue
+      const d1 = manhattan(n, target)
+      if (d1 >= distNow) continue // must reduce on first step
+      // If can attack from n, it's good
+      const pseudo = { ...unit, x: n.x, y: n.y }
+      if (canAttack(pseudo, target)) return true
+      // From n, check a second step that reduces further and is not just stepping back
+      const nbs2 = [
+        { x: n.x + 1, y: n.y },
+        { x: n.x - 1, y: n.y },
+        { x: n.x, y: n.y + 1 },
+        { x: n.x, y: n.y - 1 }
+      ]
+      for (const m of nbs2) {
+        if (!inBounds(m.x, m.y)) continue
+        if (occupied.has(`${m.x},${m.y}`)) continue
+        if (m.x === unit.x && m.y === unit.y) continue // avoid immediate backtrack
+        const d2 = manhattan(m, target)
+        if (d2 < d1) return true
+      }
+    }
+    return false
+  }
+
   // 1. Select target with advanced logic: prefer in-range enemies to avoid unnecessary moves
-  function selectTarget(unit: Unit): Unit | null {
+  function selectTarget(unit: Unit, occupied: Set<string>): Unit | null {
     const now = Date.now()
     
     // Filter visible enemies
@@ -527,11 +608,16 @@ export function useGame() {
       }
     }
 
+    // Consider approachability: prefer enemies for which we can make progress this tick
+    const canProgress = (t: Unit) => canTwoStepProgress(unit, t, occupied)
+    const progressibles = enemies.filter(canProgress)
+    const consider = progressibles.length > 0 ? progressibles : enemies
+
     // Exception: Archer targets furthest enemy (when none in range)
     if (unit.type === 'archer') {
-      let furthest = enemies[0]
+      let furthest = consider[0]
       let maxDist = manhattan(unit, furthest)
-      for (const e of enemies) {
+      for (const e of consider) {
         const dist = manhattan(unit, e)
         if (dist > maxDist) {
           maxDist = dist
@@ -542,21 +628,101 @@ export function useGame() {
     }
 
     // Taunt priority: if any enemy has taunt, only consider taunters
-    const taunters = enemies.filter(e => e.canTaunt)
-    const pool = taunters.length > 0 ? taunters : enemies
+    const taunters = consider.filter(e => e.canTaunt)
+    const pool = taunters.length > 0 ? taunters : consider
 
-    // Find closest (Manhattan)
-    let closest = pool[0]
-    let minDist = manhattan(unit, closest)
-    for (let i = 1; i < pool.length; i++) {
-      const dist = manhattan(unit, pool[i])
-      if (dist < minDist) {
-        minDist = dist
-        closest = pool[i]
+    // Rank by ease to attack next tick, then by best reduced distance after one step, then by current distance
+    const inBounds = (x: number, y: number) => x >= 0 && x < BOARD_WIDTH && y >= 0 && y < BOARD_HEIGHT
+    function scoreTarget(t: Unit) {
+      const distNow = manhattan(unit, t)
+      let bestNewDist = Number.POSITIVE_INFINITY
+      let canAttackNext = false
+      // Check 4-neighbors that are free at start and reduce distance
+      const neighbors = [
+        { x: unit.x + 1, y: unit.y },
+        { x: unit.x - 1, y: unit.y },
+        { x: unit.x, y: unit.y + 1 },
+        { x: unit.x, y: unit.y - 1 }
+      ]
+      for (const n of neighbors) {
+        if (!inBounds(n.x, n.y)) continue
+        if (occupied.has(`${n.x},${n.y}`)) continue
+        const d = manhattan({ x: n.x, y: n.y }, t)
+        if (d < distNow) {
+          bestNewDist = Math.min(bestNewDist, d)
+          const pseudo: Unit = { ...unit, x: n.x, y: n.y }
+          if (canAttack(pseudo, t)) canAttackNext = true
+        }
+      }
+      // If no decreasing free neighbor, peek BFS suggestion
+      if (!isFinite(bestNewDist)) {
+        const step = bfsTowardReducing(unit, t, occupied) || bfsNextStep(unit, t, occupied)
+        if (step) {
+          bestNewDist = manhattan(step, t)
+          const pseudo: Unit = { ...unit, x: step.x, y: step.y }
+          if (canAttack(pseudo, t)) canAttackNext = true
+        } else {
+          bestNewDist = distNow // no progress
+        }
+      }
+      // Sorting keys: attack-next first (true better), then bestNewDist, then distNow
+      return {
+        attackKey: canAttackNext ? 0 : 1,
+        newDist: bestNewDist,
+        curDist: distNow
       }
     }
 
-    return closest
+    let best = pool[0]
+    let bestS = scoreTarget(best)
+    for (let i = 1; i < pool.length; i++) {
+      const s = scoreTarget(pool[i])
+      if (
+        s.attackKey !== bestS.attackKey ? s.attackKey < bestS.attackKey :
+        s.newDist !== bestS.newDist ? s.newDist < bestS.newDist :
+        s.curDist < bestS.curDist
+      ) {
+        best = pool[i]
+        bestS = s
+      }
+    }
+
+    return best
+  }
+
+  // Externalized scoring helper to compare current vs alternative targets
+  function scoreTargetFor(unit: Unit, t: Unit, occupied: Set<string>) {
+    const distNow = manhattan(unit, t)
+    let bestNewDist = Number.POSITIVE_INFINITY
+    let canAttackNext = false
+    const inBounds = (x: number, y: number) => x >= 0 && x < BOARD_WIDTH && y >= 0 && y < BOARD_HEIGHT
+    const neighbors = [
+      { x: unit.x + 1, y: unit.y },
+      { x: unit.x - 1, y: unit.y },
+      { x: unit.x, y: unit.y + 1 },
+      { x: unit.x, y: unit.y - 1 }
+    ]
+    for (const n of neighbors) {
+      if (!inBounds(n.x, n.y)) continue
+      if (occupied.has(`${n.x},${n.y}`)) continue
+      const d = manhattan({ x: n.x, y: n.y }, t)
+      if (d < distNow) {
+        bestNewDist = Math.min(bestNewDist, d)
+        const pseudo: Unit = { ...unit, x: n.x, y: n.y }
+        if (canAttack(pseudo, t)) canAttackNext = true
+      }
+    }
+    if (!isFinite(bestNewDist)) {
+      const step = bfsTowardReducing(unit, t, occupied) || bfsNextStep(unit, t, occupied)
+      if (step) {
+        bestNewDist = manhattan(step, t)
+        const pseudo: Unit = { ...unit, x: step.x, y: step.y }
+        if (canAttack(pseudo, t)) canAttackNext = true
+      } else {
+        bestNewDist = distNow
+      }
+    }
+    return { attackKey: canAttackNext ? 0 : 1, newDist: bestNewDist, curDist: distNow }
   }
 
   // 2. Check if unit can attack target (type-specific range logic)
@@ -657,10 +823,18 @@ export function useGame() {
       // 1) Prefer strictly decreasing neighbors that are FREE at start
       const decFree = pool.filter(n => isFree(n) && manhattan({ x: n.x, y: n.y }, target) < startDist)
       if (decFree.length > 0) {
-        // Tie-breaks: axis then forward
+        // First, prioritize neighbors from which we can attack the target immediately next tick
+        const canAttackFromNeighbor = (nx: number, ny: number) => {
+          const pseudo: Unit = { ...unit, x: nx, y: ny }
+          return canAttack(pseudo, target)
+        }
+        // Tie-breaks: attack-next, then distance, then axis preference, then forward
         const dx = Math.abs(target.x - unit.x)
         const dy = Math.abs(target.y - unit.y)
         decFree.sort((a, b) => {
+          const aAttack = canAttackFromNeighbor(a.x, a.y) ? 0 : 1
+          const bAttack = canAttackFromNeighbor(b.x, b.y) ? 0 : 1
+          if (aAttack !== bAttack) return aAttack - bAttack
           const da = manhattan({ x: a.x, y: a.y }, target)
           const db = manhattan({ x: b.x, y: b.y }, target)
           if (da !== db) return da - db
@@ -674,7 +848,7 @@ export function useGame() {
         })
         const best = decFree[0]
         const newDist = manhattan({ x: best.x, y: best.y }, target)
-        addTestOutput(`T${tickCount} ${unit.team} ${cellName(unit.x, unit.y)} -> ${cellName(best.x, best.y)} d ${startDist}->${newDist}`)
+        addTestOutput(`T${tickCount} ${unit.id}(${unit.team}) ${cellName(unit.x, unit.y)} -> ${cellName(best.x, best.y)} d ${startDist}->${newDist} tgt:${target.id}`)
         lastPosition.set(unit.id, `${unit.x},${unit.y}`)
         pendingMoves.push({
           unitId: unit.id,
@@ -693,10 +867,29 @@ export function useGame() {
 
       // 2) No decreasing FREE neighbor: try BFS reducing step first, then BFS to attack position
       const nextReducing = bfsTowardReducing(unit, target, occupied)
-      const nextFromBfs = nextReducing ?? bfsNextStep(unit, target, occupied)
+      let nextFromBfs = nextReducing ?? bfsNextStep(unit, target, occupied)
+      // Prevent oscillation: avoid stepping back to the immediate last position if a reasonable alternative exists
+      if (nextFromBfs && `${nextFromBfs.x},${nextFromBfs.y}` === lastPos) {
+        const alt = valid
+          .filter(n => `${n.x},${n.y}` !== lastPos) // do not go back
+          .sort((a, b) => {
+            const aAttack = canAttack({ ...unit, x: a.x, y: a.y }, target) ? 0 : 1
+            const bAttack = canAttack({ ...unit, x: b.x, y: b.y }, target) ? 0 : 1
+            if (aAttack !== bAttack) return aAttack - bAttack
+            const da = manhattan({ x: a.x, y: a.y }, target)
+            const db = manhattan({ x: b.x, y: b.y }, target)
+            if (da !== db) return da - db
+            return 0
+          })[0]
+        if (alt) {
+          nextFromBfs = { x: alt.x, y: alt.y }
+        } else {
+          nextFromBfs = null
+        }
+      }
       if (nextFromBfs) {
         const newDist = manhattan({ x: nextFromBfs.x, y: nextFromBfs.y }, target)
-        addTestOutput(`T${tickCount} ${unit.team} ${cellName(unit.x, unit.y)} -> ${cellName(nextFromBfs.x, nextFromBfs.y)} d ${startDist}->${newDist}`)
+        addTestOutput(`T${tickCount} ${unit.id}(${unit.team}) ${cellName(unit.x, unit.y)} -> ${cellName(nextFromBfs.x, nextFromBfs.y)} d ${startDist}->${newDist} tgt:${target.id}`)
         lastPosition.set(unit.id, `${unit.x},${unit.y}`)
         pendingMoves.push({
           unitId: unit.id,
@@ -730,7 +923,7 @@ export function useGame() {
       })
       const best = pool[0]
       const newDist = manhattan({ x: best.x, y: best.y }, target)
-      addTestOutput(`T${tickCount} ${unit.team} ${cellName(unit.x, unit.y)} -> ${cellName(best.x, best.y)} d ${startDist}->${newDist}`)
+      addTestOutput(`T${tickCount} ${unit.id}(${unit.team}) ${cellName(unit.x, unit.y)} -> ${cellName(best.x, best.y)} d ${startDist}->${newDist} tgt:${target.id}`)
       lastPosition.set(unit.id, `${unit.x},${unit.y}`)
       pendingMoves.push({
         unitId: unit.id,
@@ -752,7 +945,7 @@ export function useGame() {
     if (next) {
       const startDist = manhattan(unit, target)
       const newDist = manhattan({ x: next.x, y: next.y }, target)
-      addTestOutput(`T${tickCount} ${unit.team} ${cellName(unit.x, unit.y)} -> ${cellName(next.x, next.y)} d ${startDist}->${newDist}`)
+      addTestOutput(`T${tickCount} ${unit.id}(${unit.team}) ${cellName(unit.x, unit.y)} -> ${cellName(next.x, next.y)} d ${startDist}->${newDist} tgt:${target.id}`)
       lastPosition.set(unit.id, `${unit.x},${unit.y}`)
       pendingMoves.push({
         unitId: unit.id,
@@ -777,6 +970,10 @@ export function useGame() {
     attacker.lastAttackAt = Date.now()
     target.hp -= attacker.atk
     if (!attacker.lockedTargetId) attacker.lockedTargetId = target.id
+
+    addTestOutput(
+      `T${tickCount} ATTACK ${attacker.id}(${attacker.team}) ${cellName(attacker.x, attacker.y)} -> ${target.id} ${cellName(target.x, target.y)} dmg ${attacker.atk}`
+    )
 
     // Record attack in history
     pendingAttacks.push({
@@ -896,18 +1093,14 @@ export function useGame() {
     teamBWins.value = 0
     testOutput.value = []
     enterPlacement()
+    addTestOutput(`BO3 Reset`)
   }
 
   function shiftVisual() {
     visualShift.value = (visualShift.value + 1) % BOARD_WIDTH
   }
 
-  function addTestOutput(msg: string) {
-    testOutput.value.push(`[${new Date().toLocaleTimeString()}] ${msg}`)
-  }
-
   return {
-    // State
     units,
     phase,
     running,
@@ -915,9 +1108,9 @@ export function useGame() {
     maxRounds,
     teamAWins,
     teamBWins,
-    bench,
+    benchA,
+    benchB,
     placementComplete,
-    visualShift,
     attackEffects,
     particleEffects,
     tileFlashes,
@@ -925,15 +1118,11 @@ export function useGame() {
     pathsByUnit,
     history,
     unitInfoById,
-
-    // Methods
     placeUnit,
     rotateUnit,
-    enterPlacement,
     startBattle,
     resetBO3,
     shiftVisual,
-    cellToPx,
-    addTestOutput
+    cellToPx
   }
 }
