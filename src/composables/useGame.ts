@@ -72,9 +72,11 @@ export function useGame() {
     { role: 'Soldier' as Role, placed: false }
   ])
 
-  const placementComplete = computed(() =>
-    benchA.every(b => b.placed) && benchB.every(b => b.placed)
-  )
+  const placementComplete = computed(() => {
+    const hasA = units.value.some(u => u.team === 'A')
+    const hasB = units.value.some(u => u.team === 'B')
+    return hasA && hasB
+  })
 
   function cellToPx(x: number, y: number): { px: number; py: number } {
     const px = BOARD_PADDING + x * (CELL_SIZE + CELL_GAP)
@@ -222,7 +224,7 @@ export function useGame() {
   }
 
   function startTicking() {
-    const tickInterval = 400 // ms
+    const tickInterval = 800 // ms
     tickTimer = window.setInterval(() => {
       tick()
     }, tickInterval)
@@ -458,6 +460,68 @@ export function useGame() {
       return false
     }
 
+    // Duel arbitration: if two opposing units would both step to enable an immediate attack on each other,
+    // allow only one to keep such edges this tick based on fair tie-breakers.
+    (function duelArbitration() {
+      const processed = new Set<string>()
+      const idToUnit = new Map<string, Unit>()
+      for (const u of units.value) idToUnit.set(u.id, u as Unit)
+      const favorTeam = (tickCount % 2 === 0) ? 'A' : 'B'
+      const attackNext = (u: Unit, e: MoveEvent, v: Unit) => {
+        const pseudo: Unit = { ...u, x: e.toX, y: e.toY }
+        return canAttack(pseudo, v)
+      }
+      for (const ua of moverIds) {
+        const u = idToUnit.get(ua)
+        if (!u || processed.has(ua)) continue
+        const eu = edgesByUnit.get(ua) || []
+        // Find opponents v that u could attack next tick after edge
+        const opps = moverIds
+          .filter(vId => {
+            if (vId === ua) return false
+            const v = idToUnit.get(vId)
+            if (!v || v.team === u.team) return false
+            // Check mutual potential
+            const uCan = eu.some(e => attackNext(u, e, v))
+            if (!uCan) return false
+            const ev = edgesByUnit.get(vId) || []
+            const vCan = ev.some(e => attackNext(v!, e, u))
+            return vCan
+          })
+        if (opps.length === 0) continue
+        // For simplicity, arbitrate the first such opponent not processed
+        const vb = opps.find(id => !processed.has(id))
+        if (!vb) continue
+        const v = idToUnit.get(vb)!
+        const ev = edgesByUnit.get(vb) || []
+        // Tie-breakers: deniedStreak desc, then LESS advanced unit moves (more advanced holds),
+        // then initiative favorTeam, then id asc
+        const su = deniedStreak.get(u.id) ?? 0
+        const sv = deniedStreak.get(v.id) ?? 0
+        let winner: Unit, loser: Unit
+        if (su !== sv) {
+          winner = su > sv ? u : v
+        } else {
+          const advance = (w: Unit) => w.team === 'A' ? w.y : (BOARD_HEIGHT - 1 - w.y)
+          const au = advance(u)
+          const av = advance(v)
+          if (au !== av) {
+            winner = au < av ? u : v // less advanced moves
+          } else if (u.team !== v.team) {
+            winner = (u.team === favorTeam) ? u : v
+          } else {
+            winner = (u.id < v.id) ? u : v
+          }
+        }
+        loser = (winner.id === u.id) ? v : u
+        // Strict: block all moves for the loser this tick to avoid both stepping
+        edgesByUnit.set(loser.id, [])
+        addTestOutput(`T${tickCount} DUEL ${winner.id} wins over ${loser.id}: only ${winner.id} may step to attack-range`)
+        processed.add(u.id)
+        processed.add(v.id)
+      }
+    })()
+
     // Run matching
     for (const uId of moversOrdered) {
       const u = units.value.find(x => x.id === uId)
@@ -491,6 +555,8 @@ export function useGame() {
       if (!u) continue
       pathsByUnit.value[u.id] = [ { x: u.x, y: u.y }, { x: mv.toX, y: mv.toY } ]
       animateMove(u, mv.toX, mv.toY)
+      // Update lastPosition to discourage immediate backtracking next tick
+      lastPosition.set(u.id, `${u.x},${u.y}`)
     }
     pendingMoves = allowed
 
